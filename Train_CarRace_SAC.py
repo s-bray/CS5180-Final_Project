@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import os
 import glob
+import pickle
 
 import SAC  
 import utils
@@ -46,16 +47,22 @@ env = SimpleTrackEnvClass()
 
 # === Checkpoint Resume Setup ===
 model_dir = 'models/SAC'
+results_dir = 'results'
 os.makedirs(model_dir, exist_ok=True)
-checkpoint_files = sorted(glob.glob(os.path.join(model_dir, "model_*_actor")), 
+os.makedirs(results_dir, exist_ok=True)
+
+trainlog_path = os.path.join(results_dir, 'trainlog_sac.npy')
+training_state_path = os.path.join(results_dir, 'training_state_sac.npy')
+replay_buffer_path = os.path.join(results_dir, 'replay_buffer_sac.pkl')
+
+# === Load Checkpoint if Exists ===
+checkpoint_files = sorted(glob.glob(os.path.join(model_dir, "model_*_actor")),
                           key=lambda x: int(x.split("_")[-2]))
 
-stepcounter = 0
-traincounter = 1
-savecounter = 1
+stepcounter, traincounter, savecounter = 0, 1, 1
 trainlog = []
 start_episode = 0
-best_reward = float('-inf')  # Initialize as numeric value
+best_reward = float('-inf')
 
 # Resume if checkpoint exists
 if checkpoint_files:
@@ -65,48 +72,38 @@ if checkpoint_files:
     print(f"Resuming from checkpoint: {model_path}")
     policy.load(model_path)
 
-    # Load training log with correct filename
-    trainlog_path = 'results/trainlog_sac.npy'
+    try:
+        policy.actor_optimizer.load_state_dict(torch.load(model_path + "_actor_optimizer.pth"))
+        policy.critic_optimizer.load_state_dict(torch.load(model_path + "_critic_optimizer.pth"))
+        print("Optimizer states loaded.")
+    except:
+        print("Warning: Could not load optimizer states.")
+
     if os.path.exists(trainlog_path):
         trainlog = np.load(trainlog_path, allow_pickle=True).tolist()
-        if trainlog and len(trainlog) > 0:
-            last_entry = trainlog[-1]
-            start_episode = int(last_entry[0]) + 1
-            stepcounter = int(last_entry[2])
-            traincounter = int(last_entry[3])
-            
-            # Get the best reward so far - ensure numeric values
-            try:
-                rewards = [float(entry[1]) if isinstance(entry[1], (int, float, np.number)) 
-                          else float('-inf') for entry in trainlog]
-                if rewards:
-                    best_reward = max(rewards)
-                    best_episode = trainlog[np.argmax(rewards)][0]
-                    print(f"Best reward so far: {best_reward} (episode {best_episode})")
-            except (ValueError, TypeError) as e:
-                print(f"Warning: Could not process reward values from trainlog: {e}")
-                best_reward = float('-inf')
-            
-            print(f"Resuming from episode {start_episode}")
-            print(f"Steps completed: {stepcounter}")
-            print(f"Training iterations: {traincounter}")
-        else:
-            print("Warning: Training log exists but is empty. Starting from scratch.")
-    else:
-        print("Warning: Model checkpoint found but no training log. Training counters reset.")
+
+    if os.path.exists(training_state_path):
+        training_state = np.load(training_state_path, allow_pickle=True).item()
+        start_episode = training_state['start_episode']
+        stepcounter = training_state['stepcounter']
+        traincounter = training_state['traincounter']
+        best_reward = training_state['best_reward']
+        print(f"Resuming from episode {start_episode}, steps {stepcounter}, train iterations {traincounter}")
+
+    if os.path.exists(replay_buffer_path):
+        with open(replay_buffer_path, 'rb') as f:
+            replay_buffer = pickle.load(f)
+        print("Replay buffer loaded.")
 else:
     print("No checkpoint found. Starting training from scratch.")
 
 # === Training Loop ===
-for episode in range(start_episode, 40000): # Edit number of total episodes to run the training here
-    ob = env.reset()
-    ob = process_state(ob)
-    done = False
-    saved = False
+for episode in range(start_episode, 40000):
+    ob = process_state(env.reset())
+    done, saved = False, False
     episode_reward = 0
 
     for step in range(10000):
-        time = step * dt
         stepcounter += 1
 
         # Action selection
@@ -131,35 +128,41 @@ for episode in range(start_episode, 40000): # Edit number of total episodes to r
             policy.train(replay_buffer, args['batch_size'])
             traincounter += 1
 
-        # Save model periodically
-        save_condition = traincounter % 100000 == 0
-        if save_condition and not saved:
+        # Save periodically
+        if traincounter % 100000 == 0 and not saved:
             savecounter += 1
             model_name = os.path.join(model_dir, f"model_{savecounter}")
             policy.save(model_name)
-            print(f"SAC model {savecounter} saved at training iteration {traincounter}!")
+            torch.save(policy.actor_optimizer.state_dict(), model_name + "_actor_optimizer.pth")
+            torch.save(policy.critic_optimizer.state_dict(), model_name + "_critic_optimizer.pth")
+            with open(replay_buffer_path, 'wb') as f:
+                pickle.dump(replay_buffer, f)
+            print(f"SAC model {savecounter} saved at training iteration {traincounter}")
             saved = True
 
     # Handle episode reward for comparison - ensure it's a numeric value
     episode_reward_value = float(episode_reward) if isinstance(episode_reward, (int, float, np.number)) else 0
     
+    
+    # Update best reward if needed
+
     # Update best reward if needed
     if episode_reward_value > best_reward:
         best_reward = episode_reward_value
-        print(f"New best reward: {best_reward}")
-        
-        # Optionally: Save on new best reward (uncomment if desired)
-        # if not saved:  # Don't save twice in same episode
-        #     savecounter += 1
-        #     model_name = os.path.join(model_dir, f"model_{savecounter}")
-        #     policy.save(model_name)
-        #     print(f"New best model {savecounter} saved with reward {best_reward}!")
-        #     saved = True
+        print(f"New best reward: {best_reward:.4f}")
+
+        # Save best model if desired
+        # policy.save(os.path.join(model_dir, "model_best"))
 
     fail_reason = env.query_fail_reason()
     print(f'Episode: {episode}  Reward: {episode_reward_value:.1f}  Step: {step}  Counter: {traincounter}  Reason: {fail_reason}')
     trainlog.append([episode, episode_reward_value, step, traincounter, fail_reason])
 
-    # Save training log every episode for safe recovery
-    os.makedirs('results', exist_ok=True)
-    np.save('results/trainlog_sac.npy', trainlog)
+    training_state = {
+        'start_episode': episode + 1,
+        'stepcounter': stepcounter,
+        'traincounter': traincounter,
+        'best_reward': best_reward
+    }
+    np.save(training_state_path, training_state)
+    np.save(trainlog_path, trainlog)
