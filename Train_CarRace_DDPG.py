@@ -20,13 +20,11 @@ max_action = 1
 args = {
     'start_timesteps': 1e4, 
     'eval_freq': 5e3,
-    'expl_noise': 0.1, 
+    'expl_noise': 0.2, 
     'batch_size': 256,
     'discount': 0.99,
     'tau': 0.005,
-    'policy_noise': 0.2,
-    'noise_clip': 0.5,
-    'policy_freq': 2
+    'policy_freq': 1
 }
 
 kwargs = {
@@ -35,8 +33,6 @@ kwargs = {
     "max_action": max_action,
     "discount": args['discount'],
     "tau": args['tau'],
-    "policy_noise": args['policy_noise'] * max_action,
-    "noise_clip": args['noise_clip'] * max_action,
     "policy_freq": args['policy_freq'],
 }
 
@@ -101,6 +97,11 @@ else:
 
 # === Training Loop ===
 for episode in range(start_episode, 25000):
+    if episode >= 12500:
+        # Reduce this to 6000 - 7000
+        decay_progress = (episode - 12500) / 12500
+        args['expl_noise'] = max(0.05, 0.2 * (1 - decay_progress))
+    
     ob = env.reset()
     ob = process_state(ob)
     done = False
@@ -117,7 +118,7 @@ for episode in range(start_episode, 25000):
             noise = np.random.normal(0, max_action * args['expl_noise'], size=action_dim)
             action = (policy.select_action(ob) + noise).clip(-max_action, max_action)
 
-        # Perform action
+        # Perform action with action mapping
         action_in = am.mapping(env.car.spd, env.car.steer, action[0], action[1])
         next_ob, r, done = env.step(action_in)
         next_ob = process_state(next_ob)
@@ -144,21 +145,18 @@ for episode in range(start_episode, 25000):
             print(f"Model and buffer saved at training iteration {traincounter}!")
             saved = True
 
-     # Update best reward if needed
-    episode_reward_value = float(episode_reward) if isinstance(episode_reward, (int, float, np.number)) else 0
-
+    # Update best reward
+    episode_reward_value = float(episode_reward)
     if episode_reward_value > best_reward:
         best_reward = episode_reward_value
         print(f"New best reward: {best_reward:.4f}")
-        
-        # Optionally: Save the best model (if desired)
-        # model_name = os.path.join(model_dir, f"model_best")
+        # Uncomment to save best model
+        # model_name = os.path.join(model_dir, "model_best")
         # policy.save(model_name)
-        # print(f"New best model saved with reward {best_reward}!")
 
     # End of episode logging
     fail_reason = env.query_fail_reason()
-    print(f'Episode: {episode}  Reward: {episode_reward_value:.1f}  Step: {step} Counter: {traincounter} Reason: {fail_reason}')
+    # print(f'Episode: {episode}  Reward: {episode_reward_value:.1f}  Step: {step} Counter: {traincounter} Reason: {fail_reason}   New best reward: {best_reward:.4f}')
     trainlog.append([episode, episode_reward_value, step, traincounter, fail_reason])
 
     training_state = {
@@ -169,4 +167,4 @@ for episode in range(start_episode, 25000):
     }
     np.save('results/training_state.npy', training_state)
 
-    print(f'Episode: {episode}  Reward: {episode_reward:.1f}  Steps: {step} Counter: {traincounter} Reason: {fail_reason}')
+    print(f'Episode: {episode}  Reward: {episode_reward:.1f}  Steps: {step}  Counter: {traincounter}  Reason: {fail_reason}  Exploration Noise: {args["expl_noise"]:.3f}   New best reward: {best_reward:.4f}')

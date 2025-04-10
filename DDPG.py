@@ -52,12 +52,12 @@ class DDPG(object):
         max_action,
         discount=0.99,
         tau=0.005,
-        actor_lr=3e-4,
-        critic_lr=3e-4,
-        policy_noise=0.2,
-        noise_clip=0.5,
-		policy_freq=2,
-        action_noise=0.1
+        actor_lr=1e-4,
+        critic_lr=1e-3,
+        policy_noise=0,
+        noise_clip=0,
+		policy_freq=1,
+        action_noise=0.2
     ):
         self.actor = Actor(state_dim, action_dim, max_action).to(device)
         self.actor_target = copy.deepcopy(self.actor)
@@ -98,9 +98,9 @@ class DDPG(object):
 
         # Compute the target Q value
         with torch.no_grad():
-            noise = (
-				torch.randn_like(action) * self.policy_noise
-			).clamp(-self.noise_clip, self.noise_clip)
+            # noise = (
+			# 	torch.randn_like(action) * self.policy_noise
+			# ).clamp(-self.noise_clip, self.noise_clip)
 
             next_action = self.actor_target(next_state)
             target_Q = self.critic_target(next_state, next_action)
