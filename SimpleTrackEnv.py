@@ -24,6 +24,12 @@ class SimpleTrackEnvClass():
         spd = np.random.uniform(10, 20)
         self.car = CarModelClass(pose, spd)
         self.reset_flags()
+        # Initialize progress tracking
+        self.prev_trip = 0
+        if self.track.findcar(self.car.pose):
+            self.prev_trip = self.track.car_trip
+        
+        self.track_progress = 0
         ob = self.observe()
         return ob
 
@@ -43,6 +49,20 @@ class SimpleTrackEnvClass():
 
         # observe car and track states
         ob = self.observe()
+        # Calculate progress along the track
+        current_trip = 0
+        if self.track.findcar(self.car.pose):
+            current_trip = self.track.car_trip
+        
+        # Handle lap completion case
+        if current_trip < self.prev_trip:
+            # Car has crossed the start/finish line
+            self.track_progress = (current_trip + self.track.total_trip) - self.prev_trip
+        else:
+            self.track_progress = current_trip - self.prev_trip
+        
+        # Store current position for next step
+        self.prev_trip = current_trip
 
         # check fails
         self.check_fails()
@@ -103,7 +123,18 @@ class SimpleTrackEnvClass():
 
     def reward(self):
         if not self.FAIL:
-            r = self.spd * np.cos(self.angle00) / 10.0
+            # Original reward for speed and alignment
+            alignment_reward = self.spd * np.cos(self.angle00) / 10.0
+            
+            # New reward component for distance progress
+            progress_reward = self.track_progress * 20.0  # Adjust scaling factor as needed
+            
+            # Penalize negative progress more heavily
+            if self.track_progress < 0:
+                progress_reward = self.track_progress * 40.0  # Higher penalty for going backward
+            
+            # Combined reward
+            r = alignment_reward + progress_reward
         else:
             r = -100
         return r
